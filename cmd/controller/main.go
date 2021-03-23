@@ -62,11 +62,13 @@ func newController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 	// TODO: only hear about BuildRuns owned by Runs.
 	sif := externalversions.NewSharedInformerFactoryWithOptions(buildclientv1alpha1.NewForConfigOrDie(r), resyncPeriod)
 	sif.Shipwright().V1alpha1().BuildRuns().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { c.reconcileBuildRun(obj.(*buildv1alpha1.BuildRun)) },
-		UpdateFunc: func(_, obj interface{}) { c.reconcileBuildRun(obj.(*buildv1alpha1.BuildRun)) },
-		DeleteFunc: func(obj interface{}) { c.reconcileBuildRun(obj.(*buildv1alpha1.BuildRun)) },
+		AddFunc:    func(obj interface{}) { c.reconcileBuildRun(ctx, obj.(*buildv1alpha1.BuildRun)) },
+		UpdateFunc: func(_, obj interface{}) { c.reconcileBuildRun(ctx, obj.(*buildv1alpha1.BuildRun)) },
+		DeleteFunc: func(obj interface{}) { c.reconcileBuildRun(ctx, obj.(*buildv1alpha1.BuildRun)) },
 	})
-	sif.WaitForCacheSync(make(chan struct{}))
+	stopCh := make(chan struct{})
+	sif.WaitForCacheSync(stopCh)
+	go sif.Start(stopCh)
 	c.buildRunLister = sif.Shipwright().V1alpha1().BuildRuns().Lister()
 
 	return impl
@@ -83,24 +85,26 @@ type extraFields struct {
 	BuildRunName string `json:"buildRunName,omitempty"`
 }
 
-func (c *Reconciler) reconcileBuildRun(br *buildv1alpha1.BuildRun) {
-	log.Printf("====== Reconciling BuildRun %q", br.Name)
+func (c *Reconciler) reconcileBuildRun(ctx context.Context, br *buildv1alpha1.BuildRun) {
+	logger := logging.FromContext(ctx)
+	logger.Infof("Reconciling BuildRun %q", br.Name)
 
 	// For every BuildRun update, look up the Run that owns it (if any;
 	// ignore otherwise), and enqueue a reconcile the Run in a workqueue.
 	for _, or := range br.OwnerReferences {
 		if or.APIVersion == "tekton.dev/v1alpha1" && or.Kind == "Run" {
-			log.Printf("BuildRun %s is owned by Run %s", br.Name, or.Name)
+			logger.Infof("BuildRun %s is owned by Run %s", br.Name, or.Name)
 			r, err := c.runLister.Runs(br.Namespace).Get(or.Name)
 			if err != nil {
-				log.Printf("===== ERROR: failed to get Run %q: %v", or.Name, err)
+				logger.Errorf("Failed to get Run %q: %v", or.Name, err)
+				return
 			}
-			log.Printf("Found Run that owns %s (%s), enqueueing reconcile", br.Name, r.Name)
+			logger.Infof("Found Run that owns %s (%s), enqueueing reconcile", br.Name, r.Name)
 			c.enqueueRun(r)
 			return
 		}
 	}
-	log.Printf("BuildRun %q had no owning Run", br.Name)
+	logger.Infof("BuildRun %q had no owning Run", br.Name)
 }
 
 // ReconcileKind implements Interface.ReconcileKind.
@@ -175,6 +179,13 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1alpha1.Run) reconci
 			Message:            brc.Message,
 			// BuildRun Conditions have no Severity.
 		})
+	}
+	if len(r.Status.Conditions) == 0 {
+		r.Status.Conditions = []apis.Condition{{
+			Type:               apis.ConditionSucceeded,
+			Status:             corev1.ConditionUnknown,
+			LastTransitionTime: apis.VolatileTime{Inner: metav1.Now()},
+		}}
 	}
 	// TODO: r.Status.Results["image-digest"] = built image digest.
 
