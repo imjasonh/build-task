@@ -1,0 +1,9 @@
+apiVersion: tekton.dev/v1alpha1
+kind: Run
+metadata:
+  generateName: build-run-
+spec:
+  ref:
+    apiVersion: shipwright.io/v1alpha1
+    kind: Build
+    name: my-build

@@ -1,0 +1,13 @@
+apiVersion: shipwright.io/v1alpha1
+kind: Build
+metadata:
+  name: my-build
+spec:
+  source:
+    url: https://github.com/dockersamples/node-bulletin-board
+    contextDir: bulletin-board-app
+  strategy:
+    name: kaniko
+    kind: ClusterBuildStrategy
+  output:
+    image: quay.io/blah/blah
