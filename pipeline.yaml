@@ -1,0 +1,26 @@
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: build-pipeline
+spec:
+  tasks:
+  - name: before
+    taskSpec:
+      steps:
+      - image: busybox
+        script: echo before buildrun
+
+  - name: build
+    taskRef:
+      apiVersion: shipwright.io/v1alpha1
+      kind: Build
+      name: my-build
+    runAfter: ['before']
+
+  - name: after
+    taskSpec:
+      steps:
+      - image: busybox
+        script: echo after buildrun
+    runAfter: ['build']
+

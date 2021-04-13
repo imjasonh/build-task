@@ -19,10 +19,19 @@ Two reasons:
 ### Prerequisites:
 
 1. Install Tekton
-1. Install Shipwright
-1. Install the Custom Task controller using [`ko`](https://github.com/google/ko): `ko apply -f controller.yaml`
+1. Install Shipwright and the `kaniko` ClusterBuildStrategy
+1. Install the Custom Task controller using [`ko`](https://github.com/google/ko)
 
-First, we'll define a Build config:
+```
+kubectl apply -f https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml
+kubectl apply -f https://github.com/shipwright-io/build/releases/download/v0.4.0/release.yaml
+kubectl apply -f https://raw.githubusercontent.com/shipwright-io/build/v0.4.0/samples/buildstrategy/kaniko/buildstrategy_kaniko_cr.yaml
+ko apply -f controller.yaml
+```
+
+### Create `Run`s Directly
+
+First, we'll define a Build config ([`build.yaml`](./build.yaml)):
 
 ```
 apiVersion: shipwright.io/v1alpha1
@@ -40,11 +49,13 @@ spec:
     image: quay.io/blah/blah
 ```
 
-`kubectl apply -f build.yaml` ([`build.yaml`](./build.yaml))
+```
+$ kubectl apply -f build.yaml
+```
 
 This build will pull a public GitHub repo, attempt to build it with Kaniko, then fail because it doesn't have push permissions, but that's okay because we can at least see it happen.
 
-Then, we'll define a `Run` config that runs the Build:
+Then, we'll define a `Run` config that runs the Build ([`run.yaml`](./run.yaml)):
 
 ```
 apiVersion: tekton.dev/v1alpha1
@@ -58,7 +69,9 @@ spec:
     name: my-build
 ```
 
-`kubectl create -f run.yaml` ([`run.yaml`](./run.yaml))
+```
+$ kubectl create -f run.yaml
+```
 
 Now we can see the `Run` progress:
 
@@ -83,3 +96,47 @@ build-run-sghl7-buildrun-b5sl5   False       Failed   28s         22s
 ```
 
 🎉
+
+### Integrate with Tekton Pipelines
+
+Before we can specify a Custom Task in a Pipeline, we need to enable the feature flag:
+
+```
+kubectl edit configmap feature-flags -n tekton-pipelines
+```
+
+...then edit enable-custom-tasks: 'true'
+
+Next, we'll define a Pipeline that runs a Shipwright Build ([`pipeline.yaml`](./pipeline.yaml)):
+
+```
+$ kubectl apply -f pipeline.yaml
+```
+
+This Pipeline runs a traditional Tekton Task before the Shipwright Build, and another after it.
+
+Then we'll run the Pipeline using [`tkn`](https://github.com/tektoncd/cli):
+
+```
+$ tkn pipeline start -f pipeline.yaml --showlog
+PipelineRun started: build-pipeline-run-nrpnc
+Waiting for logs to be available...
+[before : unnamed-0] + echo before buildrun
+[before : unnamed-0] before buildrun
+```
+
+This PipelineRun fails because the BuildRun fails, but we can see that it did indeed create the Run:
+
+```
+$ kubectl get runs
+NAME                                   SUCCEEDED   REASON   STARTTIME   COMPLETIONTIME
+build-pipeline-run-nrpnc-build-r7vp2   False       Failed   66s         59s
+```
+
+...which created the BuildRun:
+
+```
+$ kubectl get buildruns
+NAME                                                  SUCCEEDED   REASON   STARTTIME   COMPLETIONTIME
+build-pipeline-run-nrpnc-build-r7vp2-buildrun-7dm9g   False       Failed   47s         40s
+```

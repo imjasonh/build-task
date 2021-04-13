@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	buildv1alpha1 "github.com/shipwright-io/build/pkg/apis/build/v1alpha1"
 	buildclientv1alpha1 "github.com/shipwright-io/build/pkg/client/clientset/versioned"
@@ -18,6 +17,7 @@ import (
 	tkncontroller "github.com/tektoncd/pipeline/pkg/controller"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"knative.dev/pkg/apis"
@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	controllerName = "build-task-controller"
-	resyncPeriod   = 10 * time.Hour
+	controllerName  = "build-task-controller"
+	ownedByLabelKey = "shipwright.io/owned-by-run"
 )
 
 func main() {
@@ -59,8 +59,10 @@ func newController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 		log.Fatal(err)
 	}
 	c.buildClient = typedbuildclientv1alpha1.NewForConfigOrDie(r)
-	// TODO: only hear about BuildRuns owned by Runs.
-	sif := externalversions.NewSharedInformerFactoryWithOptions(buildclientv1alpha1.NewForConfigOrDie(r), resyncPeriod)
+	sif := externalversions.NewSharedInformerFactoryWithOptions(buildclientv1alpha1.NewForConfigOrDie(r), controller.DefaultResyncPeriod, externalversions.WithTweakListOptions(func(o *v1.ListOptions) {
+		// Only hear about BuildRuns owned by Runs.
+		o.LabelSelector = ownedByLabelKey
+	}))
 	sif.Shipwright().V1alpha1().BuildRuns().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj interface{}) { c.reconcileBuildRun(ctx, obj.(*buildv1alpha1.BuildRun)) },
 		UpdateFunc: func(_, obj interface{}) { c.reconcileBuildRun(ctx, obj.(*buildv1alpha1.BuildRun)) },
@@ -68,8 +70,8 @@ func newController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 	})
 	stopCh := make(chan struct{})
 	sif.WaitForCacheSync(stopCh)
-	go sif.Start(stopCh)
 	c.buildRunLister = sif.Shipwright().V1alpha1().BuildRuns().Lister()
+	go sif.Start(stopCh)
 
 	return impl
 }
@@ -138,6 +140,9 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1alpha1.Run) reconci
 		br, err = c.buildClient.BuildRuns(r.Namespace).Create(ctx, &buildv1alpha1.BuildRun{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: fmt.Sprintf("%s-buildrun-", r.Name),
+				Labels: map[string]string{
+					ownedByLabelKey: r.Name,
+				},
 				OwnerReferences: []metav1.OwnerReference{{
 					APIVersion: "tekton.dev/v1alpha1",
 					Kind:       "Run",
@@ -187,7 +192,8 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1alpha1.Run) reconci
 			LastTransitionTime: apis.VolatileTime{Inner: metav1.Now()},
 		}}
 	}
-	// TODO: r.Status.Results["image-digest"] = built image digest.
+	// TODO: r.Status.Results["commit-sha"] = fetched git sha
+	// TODO: r.Status.Results["image-digest"] = built image digest
 
 	return reconciler.NewEvent(corev1.EventTypeNormal, "RunReconciled", "Run reconciled: \"%s/%s\"", r.Namespace, r.Name)
 }
